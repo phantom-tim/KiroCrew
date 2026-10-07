@@ -194,7 +194,12 @@ def _url_payload_command(n: int) -> str:
 #: helper strips a local-drive namespace prefix and a default-stream suffix, and
 #: ``_candidate_forms`` resolves the folded spelling while keeping the raw one as a
 #: candidate. No target, no matching rule and no threshold moved.
-_PACKAGE_LINE_BUDGET = 28_572
+#:
+#: Raised again, from 28,572, for ``StreamRedactor``'s public readers: ``held``,
+#: ``discarding`` and ``held_may_continue``, which a stream segment that ends
+#: early (a Slack ``wait``) reads to send its held run or keep it for the next
+#: text, with the sample bodies that last check uses. No pattern moved.
+_PACKAGE_LINE_BUDGET = 28_616
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

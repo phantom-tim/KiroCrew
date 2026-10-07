@@ -450,6 +450,19 @@ _PEM_HOLD_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ``held_may_continue`` samples: one value body per class (upper+digit, mixed,
+# dotted, hex, underscored, userinfo), each clean on its own.
+_PROBE_BODY = "q7Rk2LmZ9xWv4TbN8sYc1HdJ6pFe3GaU"
+_CONTINUATION_PROBES: tuple[str, ...] = (
+    _PROBE_BODY.upper(),
+    _PROBE_BODY,
+    ".".join([_PROBE_BODY[:22]] * 3),
+    "9f2c4e6a8b0d1f3e5a7c9b2d4f6e8a0c1b3d5f7e9a2c4e6b8d0f1a3c5e7b9d2f",
+    "_".join([_PROBE_BODY[:28]] * 3),
+    "pw" + _PROBE_BODY[:10] + "@example.com/x",
+)
+_GH_PREFIXES = tuple(f"gh{c}_" for c in "opsur")
+
 # JWTs (esp. RS256/ES256 with embedded claims) routinely exceed the 512-char DoS
 # floor, so a terminal JWT longer than _STREAM_HOLDBACK_MAX would be bisected by
 # the default cap and emitted half-redacted. When the withheld tail *looks like*
@@ -766,6 +779,37 @@ class StreamRedactor:
         out = self._redact(self._buf) if self._buf else ""
         self._buf = ""
         return out
+
+    @property
+    def held(self) -> str:
+        """The raw run withheld so far (``""`` while a value is being dropped)."""
+        return self._buf
+
+    @property
+    def discarding(self) -> bool:
+        """True while the rest of a value is being dropped."""
+        return self._discarding
+
+    def held_may_continue(self) -> bool:
+        """True when the next text could join the held run into one value to filter.
+
+        A segment that ends early (a ``wait``) uses this to choose between
+        sending the held run now and keeping it for the text after the pause.
+        """
+        if self._discarding:
+            return True
+        buf = self._buf
+        if not buf:
+            return False
+        run = buf[len(buf.rstrip("".join(_CRED_CLASS))) :]
+        literals = (*_submodule("redaction")._CREDENTIAL_PREFILTER_LITERALS, *_GH_PREFIXES)
+        if run and any(lit in run or lit.startswith(run) for lit in literals):
+            return True
+        if _PEM_HOLD_RE.search(buf):
+            return True
+        # One sample body per value class. Each is clean on its own, so a
+        # change means the held run is the start of a value it completes.
+        return any(self._redact(buf + p) != self._redact(buf) + p for p in _CONTINUATION_PROBES)
 
     def reset(self) -> None:
         """Discard the buffer without emitting (segment abandoned/cleared)."""
