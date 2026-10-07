@@ -97,7 +97,7 @@ import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { usePersistedString } from '../../hooks/usePersistedString'
 import { findReport, type ErrorReport } from '../../utils/errorReport'
 import { useAppDispatch, useAppSelector } from '../../store'
-import { selectSlotStreamState, selectSlotToolLog } from '../../store/chatSlice'
+import { selectSidebarAutomationRunningKeys, selectSlotStreamState, selectSlotToolLog } from '../../store/chatSlice'
 import { toolStatusLabel, type ToolStatusDetail } from '../../utils/toolStatusLabel'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
 import { useLanguage } from '../../i18n/LanguageProvider'
@@ -106,6 +106,7 @@ import { emitSlotRead, flushSlotRead } from '../../lib/slotReadRelay'
 import { setViewedThreadSlot, clearViewedThreadSlot } from '../../lib/viewedThread'
 import CrewAvatar from '../../components/CrewAvatar'
 import CrewStateAvatar from '../../components/CrewStateAvatar'
+import CrewLoopIndicator from '../../components/crew/CrewLoopIndicator'
 import Glass from '../../components/Glass'
 import { resolvePillActivity, type PillActivityKind } from './pillActivity'
 import ChatPane from '../../components/ChatPane'
@@ -468,7 +469,7 @@ function MemberRow({
   isRunning,
   isUnread,
   isNeedsYou,
-  activePatrolOf,
+  isLoopOn,
   reduceMotion,
   scrollActiveRowIntoView,
   slugCollides,
@@ -486,7 +487,8 @@ function MemberRow({
   /** The crewmate's turn is parked on an approval or a question — the same
    *  reading the status filter and the switcher row take (`signalsOf`). */
   isNeedsYou: (m: MemberRosterRow) => boolean
-  activePatrolOf: (m: MemberRosterRow) => AutoNudgeLoop | undefined
+  /** The crewmate's automation loop is on (`signalsOf().patrolling`). */
+  isLoopOn: (m: MemberRosterRow) => boolean
   reduceMotion: boolean | null
   scrollActiveRowIntoView: (el: HTMLButtonElement | null) => void
   slugCollides: boolean
@@ -596,55 +598,10 @@ function MemberRow({
                 data-testid="member-presence-dot"
               />
             )}
-            {/* Patrol badge — the member has an ACTIVE auto-nudge loop
-                on its own thread. Rendered only while the loop patrols:
-                a stopped loop and a never-armed member both show
-                nothing, because "not patrolling" is a member's resting
-                state, not an incident — a standing warn mark on an
-                idle avatar read as "something is broken", and the
-                drawer's block already spells a stopped loop's reason.
-                Top-right corner of the avatar, the composer's goal-chip
-                glyph on a solid accent fill (the presence dot's own
-                idiom — an outline read as nothing at a glance): a
-                different corner from the presence dot (bottom-right,
-                ok-green, "working now") and a different edge from the
-                row's right-side markers, so all of them can show at
-                once without covering each other. Mount/unmount is
-                animated (the badge fades out when the loop ends rather
-                than vanishing): a badge that pops in or out mid-glance
-                is what a state change looks like when it is not a
-                glitch. Under prefers-reduced-motion the tween is
-                skipped and the badge cuts straight to its new state. */}
-            <AnimatePresence initial={false}>
-              {(() => {
-                const lp = activePatrolOf(view)
-                if (!lp) return null
-                // The tooltip spells the count the drawer's way ("3 of 24"
-                // / "61 · no limit"): the compact "3/24" alone read as a date.
-                const cycle =
-                  lp.max_cycles > 0
-                    ? t('pages.membersPage.patrol_cycles_of', { n: lp.cycle_count, max: lp.max_cycles })
-                    : t('pages.membersPage.patrol_cycles_unlimited', { n: lp.cycle_count })
-                const label = t('pages.membersPage.patrol_badge', { cycle })
-                return (
-                  <motion.span
-                    key="patrol"
-                    initial={reduceMotion ? false : { opacity: 0, scale: 0.6 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.6 }}
-                    transition={reduceMotion ? { duration: 0 } : { duration: 0.15, ease: [0.2, 0, 0, 1] }}
-                    className="absolute -right-1 -top-1 w-4 h-4 rounded-full border-2 border-bg flex items-center justify-center bg-accent text-accent-fg"
-                    role="img"
-                    aria-label={label}
-                    title={label}
-                    data-testid="member-patrol-dot"
-                    data-state="active"
-                  >
-                    <Goal size={10} aria-hidden="true" />
-                  </motion.span>
-                )
-              })()}
-            </AnimatePresence>
+            {/* On watch — the member's own thread has a live monitor or
+                goal loop. Presence only: no nudge text, no cycle count; the
+                drawer's block keeps the details. */}
+            <CrewLoopIndicator on={isLoopOn(view)} testId="member-loop-indicator" />
           </span>
           <span className="min-w-0 flex-1">
             <span className={`block ${ROW_TITLE_CLS} font-semibold text-text truncate`}>{crewDisplayName(view)}</span>
@@ -2556,6 +2513,18 @@ export default function MembersPage() {
     },
     [patrolLoopOf],
   )
+  // On watch: the sidebar's live-automation keys (Redux, kept by
+  // `autonudge_state` frames — structured monitors AND goal loops), or the
+  // registry read above.
+  const loopRunningKeys = useAppSelector(selectSidebarAutomationRunningKeys)
+  const isLoopOn = useCallback(
+    (m: MemberRosterRow) => {
+      if (activePatrolOf(m)) return true
+      const key = slotKeyOf(m)
+      return !!key && loopRunningKeys.includes(key)
+    },
+    [activePatrolOf, slotKeyOf, loopRunningKeys],
+  )
   // The live facts the status filters read, resolved per row the same way the
   // row's own markers are (isRunning / isUnread / activePatrolOf), so a filter
   // can never disagree with the dot it filters on.
@@ -2566,10 +2535,10 @@ export default function MembersPage() {
         running: !!isRunning(m),
         needsYou: !!key && !!liveNeedsYou[key],
         unread: isUnread(m),
-        patrolling: !!activePatrolOf(m),
+        patrolling: isLoopOn(m),
       }
     },
-    [slotKeyOf, isRunning, liveNeedsYou, isUnread, activePatrolOf],
+    [slotKeyOf, isRunning, liveNeedsYou, isUnread, isLoopOn],
   )
   // The roster row's needs-you cue reads the SAME resolver, so the full roster,
   // the folded switcher and the status filter can never disagree about a crewmate
@@ -3544,7 +3513,7 @@ export default function MembersPage() {
                       isRunning={isRunning}
                       isUnread={isUnread}
                       isNeedsYou={isNeedsYou}
-                      activePatrolOf={activePatrolOf}
+                      isLoopOn={isLoopOn}
                       reduceMotion={reduceMotion}
                       scrollActiveRowIntoView={scrollActiveRowIntoView}
                       slugCollides={collidingSlugs.has(m.slug)}
@@ -3762,7 +3731,7 @@ export default function MembersPage() {
                     no scrim, no badge (issue #9425). */}
                 {/* The face is a shared layout element: when the card docks and the
                     pill steps out, the same face slides into the card's head. */}
-                <motion.span layoutId={CREW_FACE_LAYOUT_ID} className="flex shrink-0 rounded-full">
+                <motion.span layoutId={CREW_FACE_LAYOUT_ID} className="relative flex shrink-0 rounded-full">
                   <CrewStateAvatar
                     seed={active.name}
                     avatar={active.avatar}
@@ -3771,6 +3740,7 @@ export default function MembersPage() {
                     size={30}
                     working="full"
                   />
+                  <CrewLoopIndicator on={isLoopOn(active)} decorative testId="member-pill-loop-indicator" />
                 </motion.span>
                 <div className="min-w-0 leading-tight">
                   {/* Title row = name (+ the ID when a label covers it). */}
@@ -3841,7 +3811,7 @@ export default function MembersPage() {
                     live region — a line that changes several times a turn
                     would otherwise be announced on every change. It is in the
                     reading order for a reader who asks. */}
-                <span className="sr-only" data-testid="member-pill-activity-sr">{pillActivity.label}</span>
+                <span className="sr-only" data-testid="member-pill-activity-sr">{pillActivity.label}{isLoopOn(active) ? ` · ${t('pages.membersPage.loop_on')}` : ''}</span>
                 {showOpener && (
                   <button
                     onClick={togglePanel}
