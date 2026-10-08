@@ -673,6 +673,11 @@ export default [
               // that grows only when a new provider CLI is wired in on purpose.
               '^(?:gh|glab) auth login$',
               '^az login$',
+              // The stash command the About panel offers when Update is refused
+              // on a checkout with uncommitted changes (`DIRTY_WORKTREE_STASH_COMMAND`).
+              // Same reason as the login commands: the user pastes it into a
+              // terminal, so it is enumerated exactly rather than shaped.
+              '^git stash push -u -m "before kirocrew update"$',
               // A `mc:`-NAMESPACED BROWSER-STORAGE KEY, e.g.
               // `mc:notif:activeKinds:v2`, `mc:notif:seenChannels`. The dashboard
               // namespaces every localStorage key it owns under `mc:`, and such

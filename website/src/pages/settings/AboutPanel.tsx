@@ -23,6 +23,7 @@ import { useAppAutoDownload } from '../../hooks/useAppAutoDownload'
 import { storeAnsweredUpdateInfo, updateInfoQuery } from '../../api/updateInfoQuery'
 import { failedWithNoData } from '../../api/queryState'
 import ErrorNotice from '../../components/ErrorNotice'
+import { DIRTY_WORKTREE_STASH_COMMAND, dirtyWorktreeChanged } from '../../utils/dirtyWorktree'
 
 import { i18nT } from '../../i18n/t'
 import { fmtDateTimeNumeric, fmtList, fmtRelative } from '../../i18n/format'
@@ -1327,6 +1328,9 @@ export function AboutPanel() {
   const [managedCmdCopyFailed, setManagedCmdCopyFailed] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
   const [applyError, setApplyError] = useState('')
+  // The apply was refused because the checkout has uncommitted changes: the
+  // error then carries guided copy, and a stash command renders beneath it.
+  const [applyDirty, setApplyDirty] = useState(false)
   const [restarting, setRestarting] = useState(false)
   const gwCheck = useMutation({
     mutationFn: () => api.checkUpdate(),
@@ -1378,7 +1382,10 @@ export function AboutPanel() {
       // with a status code — surface it. A bare network failure means the POST's
       // connection was reset by the gateway restart the update itself triggers;
       // that is the expected success path, not a failure.
-      if (e instanceof ApiError) setApplyError(e.message || i18nT('pages.settings.aboutPanel.update_failed'))
+      const changed = dirtyWorktreeChanged(e)
+      setApplyDirty(changed !== null)
+      if (changed !== null) setApplyError(i18nT('pages.settings.aboutPanel.update_refused_dirty_worktree', { changed }))
+      else if (e instanceof ApiError) setApplyError(e.message || i18nT('pages.settings.aboutPanel.update_failed'))
       else setRestarting(true)
     },
   })
@@ -1393,6 +1400,7 @@ export function AboutPanel() {
     mutationFn: () => api.restartGateway(),
     onSuccess: () => setRestarting(true),
     onError: (e: unknown) => {
+      setApplyDirty(false)
       if (e instanceof ApiError) setApplyError(e.message || i18nT('pages.settings.aboutPanel.restart_failed'))
       else setRestarting(true)
     },
@@ -2352,6 +2360,12 @@ export function AboutPanel() {
                 no onHandoff, but the hand-off navigates away and unmounts this
                 panel — modal included — so nothing is left sitting over the chat. */}
             <ErrorNotice className="mb-3" message={applyError} askAgent testId="update-apply-error" />
+            {applyDirty && applyError && (
+              <div className="mb-3 p-2.5 bg-bg rounded-lg border border-border font-mono text-[12px] text-text break-all select-all"
+                data-testid="update-dirty-stash-command">
+                {DIRTY_WORKTREE_STASH_COMMAND}
+              </div>
+            )}
             {restarting ? (
               <div className="text-[13px] text-accent flex items-center justify-center gap-1.5 py-2" role="status">
                 <RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.updating_gateway_restarting')}
