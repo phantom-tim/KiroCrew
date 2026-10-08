@@ -825,14 +825,20 @@ def _namespace_plan(
     # A target nested under a directory the launcher masks EARLIER is legitimately
     # absent by the time it is pinned, because its parent's empty mask covers it; only a
     # name that moved is a race. Subtracted by string, never by asking the filesystem.
+    # EXCEPTION: a target inside a private WINDOW is re-exposed, not covered by an empty
+    # bind, so its re-mask is non-vacuous and MUST stay required -- a cron child's own
+    # bundle ``.app_secret`` is masked by name inside the bundle window, and dropping it
+    # here would let a secret moved aside between planning and the bind surface through
+    # the window.
     masked_ancestors = [d.rstrip("/") + "/" for d in dict.fromkeys(kept)]
-    required = sorted(
-        {
-            target
-            for target in dict.fromkeys(required_in)
-            if not any(target.startswith(parent) for parent in masked_ancestors)
-        }
-    )
+    window_prefixes = [w.rstrip("/") + "/" for w in dict.fromkeys(windows)]
+
+    def _required_kept(target: str) -> bool:
+        inside_window = any(target.startswith(prefix) for prefix in window_prefixes)
+        under_empty_mask = any(target.startswith(parent) for parent in masked_ancestors)
+        return inside_window or not under_empty_mask
+
+    required = sorted({target for target in dict.fromkeys(required_in) if _required_kept(target)})
     occupants = {
         name: tuple(ident)
         for name, ident in sorted((fold(n), i) for n, i in request.mask_occupants)
