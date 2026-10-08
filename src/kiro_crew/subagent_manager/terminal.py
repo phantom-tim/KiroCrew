@@ -973,7 +973,12 @@ class TerminalCoordinator(ManagerComponent):
                 if not info.user_stopped:
                     # A user-initiated stop is a neutral outcome, not a failure.
                     Stats().inc_subagent_failed()
-                self._manager._write_tombstone(info, reason or "reaped")
+                if kill_failed is not None:
+                    # The process may still run: flagged for the next start's
+                    # reconciliation, which ends it without a second notice.
+                    self._manager._write_tombstone(info, reason or "reaped", leaked_process=True)
+                else:
+                    self._manager._write_tombstone(info, reason or "reaped")
                 self._manager._record_cost(info)
             elif kill_failed is not None and not info._finalized:
                 # The run's own arm wrote the record first (its stream died under
@@ -983,7 +988,9 @@ class TerminalCoordinator(ManagerComponent):
                 # tombstone under the same cause, so the record on disk carries
                 # the failure BEFORE the report is released below.
                 info.error = with_kill_failure(info.error, kill_failed)
-                self._manager._write_tombstone(info, info._reap_reason or "reaped")
+                self._manager._write_tombstone(
+                    info, info._reap_reason or "reaped", leaked_process=True
+                )
             elif kill_failed is not None:
                 # ``done`` AND the finalize token are both taken: the run finished
                 # on its own inside the reap window -- a result, or an exception

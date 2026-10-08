@@ -1290,6 +1290,11 @@ def write_tombstone(
                 carried["outcome"] = prior["outcome"]
             if "died" not in extra and _finite_time(prior.get("died")):
                 carried["died"] = prior["died"]
+            # A process the kill left standing is still standing after a later
+            # bookkeeping write (a delivery acknowledgement), so the record of
+            # it is carried the same way rather than erased by that write.
+            if "leaked_process" not in extra and prior.get("leaked_process") is True:
+                carried["leaked_process"] = True
     tombstone = {
         "id": agent_id,
         "task": state.get("task", ""),
@@ -1516,6 +1521,50 @@ def list_orphans() -> list[dict]:
             continue
         results.append(state)
     return results
+
+
+def list_leaked_processes() -> list[dict]:
+    """Return state for every tombstoned run whose kill left its process standing.
+
+    The tombstone ended the run, so :func:`list_orphans` skips it and the parent
+    is not told about it again. Its ``leaked_process`` flag says only that a
+    process may still be running, which is what the next start's reconciliation
+    reads this for: to end the survivor without sending a notice.
+    """
+    results: list[dict] = []
+    try:
+        dirs = sorted(_subagents_dir().iterdir())
+    except (FileNotFoundError, OSError):
+        return results
+    for d in dirs:
+        if not d.is_dir():
+            continue
+        tombstone, _present = _read_tombstone_at(d / "tombstone.json")
+        if not isinstance(tombstone, dict) or tombstone.get("leaked_process") is not True:
+            continue
+        state = read_state(d.name)
+        if state is None:
+            continue
+        results.append(state)
+    return results
+
+
+def clear_leaked_process(agent_id: str) -> None:
+    """Drop the ``leaked_process`` flag from *agent_id*'s tombstone, keeping the rest.
+
+    Rewritten in place rather than through :func:`write_tombstone`, which would
+    replace the cause, the detail and the terminal usage the run recorded.
+    Best-effort: never raises.
+    """
+    path = _agent_dir(agent_id) / "tombstone.json"
+    tombstone, _present = _read_tombstone_at(path)
+    if not isinstance(tombstone, dict) or "leaked_process" not in tombstone:
+        return
+    tombstone.pop("leaked_process", None)
+    try:
+        _atomic_write(path, tombstone)
+    except OSError:
+        logger.warning("clear_leaked_process failed for %s", agent_id, exc_info=True)
 
 
 #: The one tombstone cause that marks a run whose result reached its parent.

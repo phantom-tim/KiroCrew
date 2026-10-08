@@ -811,21 +811,30 @@ class RunEventCoordinator(ManagerComponent):
                     # this returns) before it builds its payload, so the
                     # completion the parent receives, the ``subagent_done``
                     # event and the tombstone all carry the same failure -- and
-                    # a completed run whose process the kill left standing is
-                    # NOT marked delivered (``_report_terminal`` gates that on
-                    # an empty error), so its folder stays in orphan
-                    # reconciliation, which is what kills the survivor at the
-                    # next start. Published first, the parent received a clean
-                    # completion whose ``delivered`` tombstone hid the process
-                    # from reconciliation for good (the cron reaper's
+                    # the survivor is recorded as a LEAKED PROCESS, not as an
+                    # undelivered result. Published first, the parent received a
+                    # clean completion whose ``delivered`` tombstone hid the
+                    # process from reconciliation for good (the cron reaper's
                     # ``last_error`` takes the same suffix, the one spelling).
+                    # A completed run left with no tombstone at all would be
+                    # ended by orphan reconciliation, which would also announce
+                    # its completion to the parent a second time. So the record
+                    # is written here with ``leaked_process``: the tombstone
+                    # ends the run, and the flag is what the next start reads
+                    # to end the process without a notice
+                    # (``_end_leaked_processes_impl``).
                     info.error = with_kill_failure(info.error or "", kill_failed)
                     tombstone = read_tombstone(info.id)
-                    if tombstone is not None and tombstone.get("cause") != "delivered":
+                    if tombstone is None:
+                        # A completed run: its terminal record is this one.
+                        self._manager._write_tombstone(info, "error", leaked_process=True)
+                    elif tombstone.get("cause") != "delivered":
                         # The run's own arm wrote it already (an error, a
                         # timeout, a cancel): re-written under the same cause so
                         # the record on disk names the failure too.
-                        self._manager._write_tombstone(info, str(tombstone.get("cause") or "error"))
+                        self._manager._write_tombstone(
+                            info, str(tombstone.get("cause") or "error"), leaked_process=True
+                        )
                 if fallback_ran:
                     try:
                         sel().log_tool_invocation(
