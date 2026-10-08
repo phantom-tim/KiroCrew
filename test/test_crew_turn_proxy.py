@@ -1152,3 +1152,64 @@ class TestTheCrewsReplyIsRedactedBeforeItReachesTheCaller:
         written = b"".join(resp.frames)
         assert self._KEY.encode() not in written
         assert b"crew_refused" in written
+
+    @pytest.mark.asyncio
+    async def test_a_leading_bom_does_not_hide_an_escaped_credential(self, monkeypatch):
+        """A BOM at the head of the stream must not cost the JSON-aware pass.
+
+        ``_redact_sse_event`` sends a ``data:`` line through the JSON decoder, which
+        is what sees a credential written as a JSON escape; every other line goes
+        through the plain-text chain, which cannot. So a stream whose first line is
+        ``\\ufeffdata: ...`` does not match ``data:``, takes the text chain, and the
+        escaped credential passes through -- while the browser, which skips the BOM
+        per the SSE spec, parses the field and decodes the credential back.
+        """
+        import json
+
+        _wire_handler(monkeypatch, status=_connected())
+        _capture_stream(monkeypatch)
+        # The literal bytes never spell the key id: only a JSON decode produces it.
+        escaped = b"\\u0041" + self._KEY[1:].encode()
+        event = b"\xef\xbb\xbf" + b'data: {"delta": "key ' + escaped + b'"}\n\n'
+        _install_session(monkeypatch, [], resp=_FakeResp(status=200, chunks=(event,)))
+        resp = await mod.api_crew_turn(_turn_request({"message": "hi", "thread": "t"}))
+
+        written = b"".join(resp.frames).decode()
+        # Read it the way a BOM-stripping EventSource client does.
+        payload = "\n".join(
+            line[len("data: ") :]
+            for line in written.removeprefix("\ufeff").split("\n")
+            if line.startswith("data: ")
+        )
+        assert self._KEY not in json.dumps(json.loads(payload)), (
+            "the BOM sent the data line through the plain-text chain, so the "
+            "escaped credential reached the caller"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_bom_split_across_chunks_is_still_stripped(self, monkeypatch):
+        """The BOM is three bytes and the socket may split it.
+
+        Stripping only when the whole prefix has arrived is why the strip waits for
+        the third byte instead of testing the first chunk and giving up.
+        """
+        import json
+
+        _wire_handler(monkeypatch, status=_connected())
+        _capture_stream(monkeypatch)
+        escaped = b"\\u0041" + self._KEY[1:].encode()
+        stream = b"\xef\xbb\xbf" + b'data: {"delta": "key ' + escaped + b'"}\n\n'
+        _install_session(
+            monkeypatch,
+            [],
+            resp=_FakeResp(status=200, chunks=(stream[:1], stream[1:2], stream[2:])),
+        )
+        resp = await mod.api_crew_turn(_turn_request({"message": "hi", "thread": "t"}))
+
+        written = b"".join(resp.frames).decode()
+        payload = "\n".join(
+            line[len("data: ") :]
+            for line in written.removeprefix("\ufeff").split("\n")
+            if line.startswith("data: ")
+        )
+        assert self._KEY not in json.dumps(json.loads(payload))

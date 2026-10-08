@@ -492,10 +492,23 @@ async def api_crew_turn(request: web.Request) -> web.StreamResponse:
                 # and one the redactor refuses both end the stream rather than
                 # forwarding anything unchecked.
                 pending = b""
+                first = True
                 async for chunk in resp.content.iter_any():
                     if not chunk:
                         continue
                     pending += chunk
+                    if first:
+                        # The stream's BOM, before any field is read. The browser
+                        # skips it per the SSE spec, so a ``data:`` line behind one
+                        # is a data line to the caller -- but not to the line match
+                        # in ``_redact_sse_event``, which would send it down the
+                        # plain-text chain and miss a credential written as a JSON
+                        # escape. Three bytes, so a BOM the socket split waits for
+                        # its last one rather than being half-tested and given up on.
+                        if len(pending) < 3 and b"\xef\xbb\xbf".startswith(pending):
+                            continue
+                        pending = pending.removeprefix(b"\xef\xbb\xbf")
+                        first = False
                     hold = pending.endswith(b"\r")
                     if hold:
                         pending = pending[:-1]
