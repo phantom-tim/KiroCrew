@@ -175,13 +175,18 @@ from kiro_crew.dashboard.chat_turn.directives import (  # noqa: F401
 from kiro_crew.dashboard.chat_turn.file_changes import (  # noqa: F401
     _PATH_TRUNCATION_MARKER,
     _apply_turn_snapshot_budget,
+    _begin_turn_path_writes,
     _classify_str_replace_before,
+    _close_turn_path_writes,
+    _foreign_path_write,
     _line_change_input,
     _note_reply_row,
+    _PathWriteLog,
     _pending_str_replace_payload,
     _record_turn_snapshot,
     _resolve_pending_str_replace,
     _safe_read_snapshot,
+    _slot_write_token,
     _Snapshot,
     _snapshot_write_target,
     _truncate_snapshot,
@@ -1853,6 +1858,15 @@ _MAX_SNAPSHOT_PATH_CHARS = 32_767
 # accumulator holds every distinct path once, so a repeated write adds no row.
 _MAX_TURN_SNAPSHOT_ENTRIES = 200
 
+# Process-wide record of which slot wrote which canonical path, read at flush
+# so a deferred strReplace before is not settled while ANOTHER session wrote the
+# same file inside this turn (the writer-id gate is slot-local). Bounded to
+# _MAX_TRACKED_WRITE_PATHS distinct paths and _MAX_TRACKED_WRITERS_PER_PATH slots
+# per path; any eviction fails closed for turns already running.
+_MAX_TRACKED_WRITE_PATHS = 4096
+_MAX_TRACKED_WRITERS_PER_PATH = 64
+_PATH_WRITES = _PathWriteLog(_MAX_TRACKED_WRITE_PATHS, _MAX_TRACKED_WRITERS_PER_PATH)
+
 # Distinct redacted tool_call_ids one turn tracks a source digest for. The ids
 # come from the LLM, so their number is not the runner's to trust; past this a
 # further id is treated as collapsed, which withholds its app notice rather than
@@ -2052,7 +2066,16 @@ def _flush_file_changes(
         # could shape the turn-end read into a false pre-write match: when a
         # shell ran this turn (turn_had_shell), skip resolution entirely and
         # keep the fragment rather than trust an unattributable turn-end state.
-        if pending is not None and after is not None and not turn_had_shell:
+        # A write by ANOTHER slot is invisible to that gate (it is slot-local)
+        # and to turn_had_shell, but lands on the same file: when the
+        # process-wide write log says another slot wrote this path inside this
+        # turn's window, keep the fragment for the same reason.
+        if (
+            pending is not None
+            and after is not None
+            and not turn_had_shell
+            and not _foreign_path_write(slot, key)
+        ):
             resolved = _resolve_pending_str_replace(pending, after.content)
             if resolved is not None:
                 # Already _MAX_SNAPSHOT-capped by _pending_str_replace_payload;
@@ -2166,6 +2189,7 @@ def _flush_file_changes(
     # (slot.append in the else branch already sets it; setting it once here
     # covers both branches and cannot be missed by a later edit.)
     slot._dirty = True
+    _close_turn_path_writes(slot, deduped.keys())
     slot._file_changes = []
     if isinstance(reply_mids, list):
         reply_mids.clear()
@@ -8384,6 +8408,9 @@ async def _run_chat(
     # leave its ids behind, and the flush clears the list itself on exit.
     if isinstance(getattr(slot, "_turn_reply_mids", None), list):
         slot._turn_reply_mids.clear()
+    # Where this turn starts on the process-wide file-write log, so the flush
+    # can tell a write another session made during this turn from an old one.
+    _begin_turn_path_writes(slot)
     # The turn's ORDINAL for the crew log, kept separate from the message-slice
     # index above even though both start at the same value. The slice index is
     # reset when a mid-turn clear empties the message list, because the turn-stats
