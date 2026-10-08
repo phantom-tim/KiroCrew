@@ -604,13 +604,19 @@ class BackendPool:
         SIGKILLed during the drain window leaves them orphaned, the exact leak
         this pidfile mechanism exists to prevent.
         """
-        pids = [b.pid for b in self._backends.values() if b.pid is not None]
-        pids.extend(e.backend.pid for e in self._draining if e.backend.pid is not None)
+        return [pid for pid, _start in self.live_backend_identities()]
+
+    def live_backend_identities(self) -> list[tuple[int, Optional[str]]]:
+        """``(pid, start_id)`` for every backend :meth:`live_backend_pids` names,
+        the start id being the one each backend captured at spawn
+        (:attr:`Backend.start_id`), never re-read here."""
+        backends = list(self._backends.values())
+        backends.extend(e.backend for e in self._draining)
         # Connection-private backends are ordinary child processes; being outside
         # the reuse index and the capacity budget does not make them any less
         # orphanable by a SIGKILLed gatewayd.
-        pids.extend(b.pid for b in self._exclusive.values() if b.pid is not None)
-        return pids
+        backends.extend(self._exclusive.values())
+        return [(b.pid, b.start_id) for b in backends if b.pid is not None]
 
     async def add(
         self,
